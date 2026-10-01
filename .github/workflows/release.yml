@@ -1,0 +1,176 @@
+name: Release Poknite
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require a public repository and a tag on the default branch
+        env:
+          VISIBILITY: ${{ github.event.repository.visibility }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [[ "$VISIBILITY" != public ]]; then
+            echo 'This release workflow requires a public repository for free GitHub attestations.' >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_REF_TYPE" != tag ]]; then
+            echo 'Select an existing version tag when running this workflow manually.' >&2
+            exit 1
+          fi
+          git merge-base --is-ancestor HEAD "refs/remotes/origin/$DEFAULT_BRANCH"
+      - name: Validate embedded versions
+        id: version
+        run: python3 tools/release_metadata.py "$GITHUB_REF_NAME"
+      - name: Require Android signing configuration
+        env:
+          HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+          HAS_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD != '' }}
+          HAS_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS != '' }}
+          HAS_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD != '' }}
+          HAS_CERTIFICATE: ${{ vars.ANDROID_CERT_SHA256 != '' }}
+        run: |
+          for value in "$HAS_KEYSTORE" "$HAS_STORE_PASSWORD" "$HAS_ALIAS" "$HAS_KEY_PASSWORD" "$HAS_CERTIFICATE"; do
+            if [[ "$value" != true ]]; then
+              echo 'Configure the four ANDROID_* secrets and the ANDROID_CERT_SHA256 variable before releasing.' >&2
+              exit 1
+            fi
+          done
+
+  verify:
+    needs: validate
+    uses: ./.github/workflows/check.yml
+
+  package:
+    needs: [validate, verify]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: artifacts
+      - name: Package verified Linux and Windows builds
+        run: |
+          chmod +x artifacts/linux-ubuntu24/target/release/poknite artifacts/linux-ubuntu24/target/release/poknited
+          POKNITE_SKIP_BUILD=1 POKNITE_RELEASE_DIR="$PWD/artifacts/linux-ubuntu24/target/release" bash tools/package.sh
+          mv dist/poknite-linux-x64.tar.gz "dist/poknite-$VERSION-linux-x64.tar.gz"
+          rm dist/poknite-linux-x64.tar.gz.sha256
+          mkdir -p dist/windows/poknite/docs dist/windows/poknite/deploy
+          cp artifacts/windows-x64/target/release/poknite.exe dist/windows/poknite/
+          cp README.md LICENSE THIRD_PARTY_NOTICES.txt dist/windows/poknite/
+          cp docs/desktop.md dist/windows/poknite/docs/
+          cp deploy/CPP_RUNTIME_NOTICES.txt dist/windows/poknite/deploy/
+          (cd dist/windows && zip -qr "../poknite-$VERSION-windows-x64.zip" poknite)
+          mkdir -p dist/android/poknite
+          cp LICENSE android/README.md android/THIRD_PARTY_NOTICES.txt dist/android/poknite/
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          packages: platform-tools
+      - run: sdkmanager 'build-tools;36.0.0'
+      - name: Sign and verify Android release
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_CERT_SHA256: ${{ vars.ANDROID_CERT_SHA256 }}
+        run: |
+          python3 tools/sign_android.py \
+            artifacts/android-release-unsigned/android/app/build/outputs/apk/release/app-release-unsigned.apk \
+            "dist/poknite-$VERSION-android.apk" \
+            --build-tools "$ANDROID_HOME/build-tools/36.0.0"
+          cp "dist/poknite-$VERSION-android.apk" dist/android/poknite/poknite.apk
+          (cd dist/android && zip -qr "../poknite-$VERSION-android.zip" poknite)
+      - name: Calculate checksums
+        working-directory: dist
+        run: sha256sum *.tar.gz *.zip *.apk > SHA256SUMS
+      - name: Sign release files with GitHub attestations
+        id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.apk
+            dist/SHA256SUMS
+      - name: Include verification bundle
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: cp "$BUNDLE_PATH" dist/attestation.sigstore.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: signed-release
+          if-no-files-found: error
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.apk
+            dist/SHA256SUMS
+            dist/attestation.sigstore.json
+
+  publish:
+    needs: [validate, package]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: signed-release
+          path: dist
+      - name: Verify files before publishing
+        working-directory: dist
+        run: |
+          sha256sum --check SHA256SUMS
+          gh attestation verify SHA256SUMS --repo "$GH_REPO" \
+            --bundle attestation.sigstore.json \
+            --cert-identity "https://github.com/$GH_REPO/.github/workflows/release.yml@$GITHUB_REF" \
+            --source-ref "$GITHUB_REF" --source-digest "$GITHUB_SHA"
+      - name: Create or resume a draft, upload all files, then publish
+        run: |
+          # Published releases are never overwritten on reruns.
+          if gh release view "$GITHUB_REF_NAME" --json isDraft > release-state.json; then
+            if [[ $(jq -r .isDraft release-state.json) != true ]]; then
+              echo 'A published release already exists for this tag.' >&2
+              exit 1
+            fi
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --draft \
+              --title "Poknite ${GITHUB_REF_NAME#v}" --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease="$PRERELEASE"

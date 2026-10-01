@@ -12,7 +12,7 @@ python3 tools/check_sizes.py --release-dir "$task_release"
 [[ $(stat -c %s "$task_release/poknite") -le 12582912 ]]
 mkdir -p dist/linux/poknite/deploy
 install -m 0755 "$task_release/poknited" "$task_release/poknite" dist/linux/poknite/
-cp deploy/poknite.toml deploy/poknite.service deploy/poknite.logrotate deploy/install.sh dist/linux/poknite/deploy/
+cp deploy/poknite.toml deploy/poknite.service deploy/poknite.logrotate deploy/install.sh deploy/CPP_RUNTIME_NOTICES.txt dist/linux/poknite/deploy/
 cp README.md CONTRIBUTING.md LICENSE THIRD_PARTY_NOTICES.txt dist/linux/poknite/
 cp -r docs dist/linux/poknite/
 mkdir -p dist/linux/poknite/android

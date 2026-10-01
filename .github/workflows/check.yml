@@ -1,5 +1,10 @@
 name: Verify Poknite
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 jobs:
@@ -13,6 +18,7 @@ jobs:
           components: rustfmt, clippy
       - run: sudo apt-get update && sudo apt-get install -y cmake ninja-build libdbus-1-dev libx11-dev libxext-dev libxft-dev libxrender-dev libxfixes-dev libxcursor-dev libxinerama-dev libxrandr-dev
       - uses: Swatinem/rust-cache@v2
+      - run: python3 tools/test_release.py
       - run: cargo fmt --all -- --check
       - run: cargo test --workspace --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -23,6 +29,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: linux-ubuntu24
+          if-no-files-found: error
           path: |
             target/release/poknited
             target/release/poknite
@@ -45,11 +52,13 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: windows-x64
+          if-no-files-found: error
           path: |
             target/release/poknite.exe
             README.md
             LICENSE
             THIRD_PARTY_NOTICES.txt
+            deploy/CPP_RUNTIME_NOTICES.txt
             docs/desktop.md
   android:
     runs-on: ubuntu-24.04
@@ -69,6 +78,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: android-release-unsigned
+          if-no-files-found: error
           path: |
             android/app/build/outputs/apk/release/*unsigned.apk
             android/README.md

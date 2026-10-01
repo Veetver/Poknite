@@ -52,6 +52,7 @@ HTTPS защищает соединение, но сквозного шифро�
 - [Настольный клиент](docs/desktop.md)
 - [Android: подключение, фоновая работа и подпись](android/README.md)
 - [Сборка из исходников](docs/building.md)
+- [Автоматические релизы и проверка подписей](docs/releases.md)
 - [HTTP/WebSocket API](docs/protocol.md)
 - [Тестирование и измерение ресурсов](docs/verification.md)
 - [Участие в проекте](CONTRIBUTING.md)

@@ -31,4 +31,6 @@ python3 tools/check_sizes.py
 
 Каталоги `target/`, `dist/`, локальные настройки Android SDK, базы и ключи не включаются в Git. Артефакты отдельных сборок доступны в завершённых запусках [GitHub Actions](https://github.com/Veetver/Poknite/actions). Android-артефакт из CI не подписан: перед установкой используйте собственный ключ.
 
+[Автоматический релиз по тегу](releases.md) подписывает APK постоянным ключом из GitHub Secrets и прикладывает проверяемые подписи GitHub для всех файлов поставки.
+
 При распространении бинарных файлов включайте `LICENSE`, `THIRD_PARTY_NOTICES.txt` и применимые уведомления из `deploy/CPP_RUNTIME_NOTICES.txt` и `android/THIRD_PARTY_NOTICES.txt`. После обновления зависимостей обновляйте их лицензионные уведомления.
