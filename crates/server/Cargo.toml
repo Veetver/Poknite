@@ -1,0 +1,31 @@
+[package]
+name = "poknite-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[[bin]]
+name = "poknited"
+path = "src/main.rs"
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+toml.workspace = true
+rusqlite.workspace = true
+uuid.workspace = true
+futures-util.workspace = true
+poknite-protocol.workspace = true
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "ws", "query"] }
+axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+getrandom = "0.3"
+sha2 = "0.10"
+hex = "0.4"
+fs2 = "0.4"
+rustls-pemfile = "2"
+x509-parser = { version = "0.18", default-features = false }
+[dev-dependencies]
+tempfile = "3"
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+tokio-tungstenite = "0.29"

@@ -1,0 +1,3 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application><uses-library android:name="android.test.runner" android:required="false" /><uses-library android:name="android.test.base" android:required="false" /></application>
+</manifest>

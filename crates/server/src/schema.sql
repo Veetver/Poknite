@@ -1,0 +1,12 @@
+CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);
+CREATE TABLE IF NOT EXISTS channels(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);
+CREATE TABLE IF NOT EXISTS memberships(user_id INTEGER NOT NULL REFERENCES users(id),channel_id INTEGER NOT NULL REFERENCES channels(id),PRIMARY KEY(user_id,channel_id));
+CREATE TABLE IF NOT EXISTS devices(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL REFERENCES users(id),name TEXT NOT NULL,token_hash TEXT NOT NULL UNIQUE,created_at INTEGER NOT NULL,revoked INTEGER NOT NULL DEFAULT 0,acked INTEGER NOT NULL DEFAULT 0,lost_through INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS invitations(hash TEXT PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id),expires_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS messages(seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,channel_id INTEGER NOT NULL REFERENCES channels(id),sender_id INTEGER NOT NULL REFERENCES users(id),device_id INTEGER NOT NULL REFERENCES devices(id),client_message_id TEXT NOT NULL,text TEXT NOT NULL,created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,UNIQUE(device_id,client_message_id));
+CREATE INDEX IF NOT EXISTS messages_channel_seq ON messages(channel_id,seq);
+CREATE INDEX IF NOT EXISTS messages_expiration ON messages(expires_at);
+CREATE INDEX IF NOT EXISTS devices_user ON devices(user_id);
+CREATE INDEX IF NOT EXISTS messages_device ON messages(device_id);
+INSERT OR IGNORE INTO channels(id,name) VALUES(1,'Общий');
+PRAGMA user_version=1;

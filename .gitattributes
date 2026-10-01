@@ -1,0 +1,8 @@
+* text=auto eol=lf
+*.bat text eol=crlf
+*.jar binary
+
+# Preserve upstream license text verbatim.
+THIRD_PARTY_NOTICES.txt -whitespace
+android/THIRD_PARTY_NOTICES.txt -whitespace
+deploy/CPP_RUNTIME_NOTICES.txt -whitespace

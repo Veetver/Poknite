@@ -1,0 +1,8 @@
+/var/log/poknite/server.log {
+    size 1M
+    rotate 1
+    missingok
+    notifempty
+    copytruncate
+    su poknite poknite
+}

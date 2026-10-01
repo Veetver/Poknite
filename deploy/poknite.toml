@@ -1,0 +1,12 @@
+listen = "0.0.0.0:443"
+data_dir = "/var/lib/poknite"
+certificate = "/etc/poknite/cert.pem"
+private_key = "/etc/poknite/key.pem"
+retention_seconds = 86400
+max_connections = 60
+max_users = 20
+max_devices_per_user = 3
+database_bytes = 33554432
+wal_bytes = 4194304
+heartbeat_seconds = 120
+pong_timeout_seconds = 30

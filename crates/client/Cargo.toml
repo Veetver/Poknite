@@ -1,0 +1,24 @@
+[package]
+name = "poknite-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+rusqlite.workspace = true
+uuid.workspace = true
+futures-util.workspace = true
+poknite-protocol.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+rustls-pemfile = "2"
+rustls-native-certs = "0.8"
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Security_Cryptography", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock"] }
+
+[target.'cfg(target_os="linux")'.dependencies]
+libc = "0.2"
