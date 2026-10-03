@@ -1,4 +1,5 @@
 use crate::{
+    access,
     config::Config,
     db::{self, Auth, Database},
 };
@@ -37,6 +38,7 @@ pub struct App {
     slots: Arc<Semaphore>,
     requests: Arc<Semaphore>,
     sessions: Mutex<HashMap<i64, (uuid::Uuid, watch::Sender<bool>)>>,
+    pub(crate) delivery_gate: tokio::sync::RwLock<()>,
     rates: Mutex<HashMap<String, (Instant, u32)>>,
 }
 impl App {
@@ -52,18 +54,19 @@ impl App {
             config,
             changed,
             sessions: Mutex::new(HashMap::new()),
+            delivery_gate: tokio::sync::RwLock::new(()),
             rates: Mutex::new(HashMap::new()),
         }))
     }
     pub fn wake(&self) {
         self.changed.send_modify(|v| *v = v.wrapping_add(1));
     }
-    fn cancel(&self, device: i64) {
+    pub(crate) fn cancel(&self, device: i64) {
         if let Some((_, cancel)) = self.sessions.lock().unwrap().get(&device) {
             cancel.send_replace(true);
         }
     }
-    fn limit(&self, key: String, max: u32) -> ApiResult<()> {
+    pub(crate) fn limit(&self, key: String, max: u32) -> ApiResult<()> {
         let mut rates = self.rates.lock().unwrap();
         let now = Instant::now();
         if rates.len() >= 1024 {
@@ -92,14 +95,14 @@ impl App {
         Ok(())
     }
 }
-type ApiResult<T> = std::result::Result<T, Failure>;
+pub(crate) type ApiResult<T> = std::result::Result<T, Failure>;
 pub struct Failure(StatusCode, ApiError);
 impl IntoResponse for Failure {
     fn into_response(self) -> Response {
         (self.0, Json(self.1)).into_response()
     }
 }
-fn error(status: StatusCode, code: &str, message: &str) -> Failure {
+pub(crate) fn error(status: StatusCode, code: &str, message: &str) -> Failure {
     Failure(
         status,
         ApiError {
@@ -108,10 +111,42 @@ fn error(status: StatusCode, code: &str, message: &str) -> Failure {
         },
     )
 }
-fn database_error(e: anyhow::Error) -> Failure {
+pub(crate) fn database_error(e: anyhow::Error) -> Failure {
     if e.to_string() == "unauthorized" {
         return denied();
     }
+    let code = e.to_string();
+    let (status, message) = match code.as_str() {
+        "forbidden" => (
+            StatusCode::FORBIDDEN,
+            "Недостаточно прав для этого действия",
+        ),
+        "not_found" => (StatusCode::NOT_FOUND, "Объект не найден"),
+        "last_admin" => (
+            StatusCode::CONFLICT,
+            "Нельзя отключить или лишить прав последнего администратора",
+        ),
+        "builtin_role" => (
+            StatusCode::CONFLICT,
+            "Начальные роли защищены от изменения и удаления",
+        ),
+        "invalid_input" | "invalid_mentions" => (
+            StatusCode::BAD_REQUEST,
+            "Проверьте данные, диапазоны упоминаний и актуальные ники",
+        ),
+        "closed" => (StatusCode::CONFLICT, "Канал закрыт"),
+        "user_limit" | "channel_limit" | "role_limit" | "invitation_limit" => {
+            (StatusCode::CONFLICT, "Лимит достигнут")
+        }
+        _ => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Хранилище временно недоступно",
+        ),
+    };
+    if status != StatusCode::SERVICE_UNAVAILABLE {
+        return error(status, &code, message);
+    }
+    if e.chain().any(|e|matches!(e.downcast_ref::<rusqlite::Error>(),Some(rusqlite::Error::SqliteFailure(err,_)) if err.code==rusqlite::ErrorCode::ConstraintViolation)){return error(StatusCode::CONFLICT,"conflict","Ник или название уже заняты; проверьте ссылки и роли");}
     if e.to_string()=="storage_full" || e.chain().any(|e|matches!(e.downcast_ref::<rusqlite::Error>(),Some(rusqlite::Error::SqliteFailure(err,_)) if err.code==rusqlite::ErrorCode::DiskFull)) {
         error(StatusCode::INSUFFICIENT_STORAGE,"storage_full","Хранилище заполнено. Повторите после освобождения места")
     } else { error(StatusCode::SERVICE_UNAVAILABLE,"database_unavailable","Хранилище временно недоступно") }
@@ -123,7 +158,7 @@ fn denied() -> Failure {
         "Устройство отключено или токен недействителен",
     )
 }
-async fn auth(app: &App, headers: &HeaderMap) -> ApiResult<Auth> {
+pub(crate) async fn auth(app: &App, headers: &HeaderMap) -> ApiResult<Auth> {
     let token = headers
         .get("authorization")
         .and_then(|h| h.to_str().ok())
@@ -145,17 +180,25 @@ pub fn router(app: Arc<App>) -> Router {
                 Json(serde_json::json!({"status":"ok","version":env!("CARGO_PKG_VERSION")}))
             }),
         )
-        .route("/v1/devices/enroll", post(enroll))
-        .route("/v1/channels", get(channel_list))
-        .route("/v1/channels/{id}/messages", post(publish))
-        .route("/v1/devices", get(device_list))
-        .route("/v1/devices/{id}", delete(revoke))
-        .route("/v1/stream", get(stream))
+        .route("/v1", axum::routing::any(upgrade_required))
+        .route("/v1/{*path}", axum::routing::any(upgrade_required))
+        .route("/v2/profile", get(profile).put(rename_profile))
+        .route("/v2/contacts", get(contacts))
+        .route("/v2/conversations", get(channel_list))
+        .route("/v2/conversations/direct", post(direct))
+        .route("/v2/conversations/{id}/participants", get(participants))
+        .route("/v2/conversations/{id}/e2ee-members", get(e2ee_members))
+        .route("/v2/devices/enroll", post(enroll))
+        .route("/v2/channels", get(channel_list))
+        .route("/v2/conversations/{id}/messages", post(publish))
+        .route("/v2/devices", get(device_list))
+        .route("/v2/devices/{id}", delete(revoke))
+        .route("/v2/stream", get(stream))
         .layer(DefaultBodyLimit::max(MAX_FRAME_BYTES))
         .layer(middleware::from_fn_with_state(app.clone(), request_limit))
         .with_state(app)
 }
-async fn request_limit(
+pub(crate) async fn request_limit(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     request: Request,
@@ -202,7 +245,7 @@ async fn enroll(
     let result=app.db.run(move |c| {
         db::writable(c,&app_config)?;
         let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let user:Option<(i64,String)>=tx.query_row("SELECT u.id,u.name FROM invitations i JOIN users u ON u.id=i.user_id WHERE i.hash=? AND i.expires_at>?",params![invitation_hash,db::now()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+        let user:Option<(i64,String)>=tx.query_row("SELECT u.id,u.name FROM invitations i JOIN users u ON u.id=i.user_id WHERE i.hash=? AND i.expires_at>? AND u.disabled=0",params![invitation_hash,db::now()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
         let Some((user_id,user_name))=user else { return Ok(None); };
         let count:i64=tx.query_row("SELECT COUNT(*) FROM devices WHERE user_id=? AND revoked=0",[user_id],|r|r.get(0))?;
         let total:i64=tx.query_row("SELECT COUNT(*) FROM devices WHERE revoked=0",[],|r|r.get(0))?;
@@ -236,9 +279,24 @@ async fn enroll(
         retention_seconds: app.retention.load(Ordering::Relaxed),
     }))
 }
+#[derive(Default, serde::Deserialize)]
+pub(crate) struct ListPage {
+    #[serde(default)]
+    pub offset: usize,
+}
+impl ListPage {
+    pub(crate) fn take<T>(self, list: Vec<T>) -> Vec<T> {
+        list.into_iter()
+            .skip(self.offset)
+            .take(CATALOG_PAGE_SIZE)
+            .collect()
+    }
+}
+
 async fn channel_list(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
+    Query(page): Query<ListPage>,
 ) -> ApiResult<Json<Vec<Channel>>> {
     let a = auth(&app, &headers).await?;
     Ok(Json(
@@ -246,7 +304,7 @@ async fn channel_list(
             .run(move |c| {
                 let tx = c.transaction()?;
                 db::active(&tx, a.device_id)?;
-                db::channels(&tx, a.user_id)
+                Ok(page.take(db::channels(&tx, a.user_id)?))
             })
             .await
             .map_err(database_error)?,
@@ -309,12 +367,38 @@ async fn publish(
 ) -> ApiResult<Json<Message>> {
     let a = auth(&app, &headers).await?;
     app.limit(format!("publish:{}", a.device_id), 30)?;
-    if !valid_text(&request.text) || uuid::Uuid::parse_str(&request.client_message_id).is_err() {
+    let sealed = poknite_protocol::e2ee::parse(&request.text);
+    if app.config.e2ee_required && sealed.is_none() {
+        return Err(error(
+            StatusCode::UPGRADE_REQUIRED,
+            "e2ee_required",
+            "Нужен клиент со сквозным шифрованием",
+        ));
+    }
+    if (sealed.is_none()
+        && (!valid_text(&request.text) || request.text.starts_with(poknite_protocol::e2ee::PREFIX)))
+        || uuid::Uuid::parse_str(&request.client_message_id).is_err()
+    {
         return Err(error(
             StatusCode::BAD_REQUEST,
             "invalid_message",
             "Нужен текст до 4096 байт и уникальный идентификатор",
         ));
+    }
+    if let Some(ref sealed) = sealed {
+        let h = &sealed.header;
+        if h.cid != channel
+            || h.sid != a.user_id
+            || h.did != a.device_id
+            || h.mid != request.client_message_id
+            || h.mentions != request.mentions
+        {
+            return Err(error(
+                StatusCode::BAD_REQUEST,
+                "invalid_message",
+                "Не совпадают защищённые данные сообщения",
+            ));
+        }
     }
     let cfg = app.config.clone();
     let ttl = app.retention.load(Ordering::Relaxed);
@@ -322,26 +406,42 @@ async fn publish(
         let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         db::active(&tx,a.device_id)?;
         // Recheck access inside the write transaction: revocation cannot race a publish.
-        let allowed:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM memberships g JOIN devices d ON d.user_id=g.user_id WHERE g.channel_id=? AND d.id=? AND d.revoked=0)",params![channel,a.device_id],|r|r.get(0))?;
+        let allowed=access::conversation_allowed(&tx,a.user_id,channel,Permission::Send)?;
         if !allowed {return Ok(Err("forbidden"));}
         let sql=format!("SELECT {} FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.device_id=? AND m.client_message_id=?",db::MESSAGE_COLUMNS);
         if let Some(existing)=tx.query_row(&sql,params![a.device_id,request.client_message_id],db::message_row).optional()? {
-            if existing.channel_id!=channel || existing.text!=request.text {return Ok(Err("id_conflict"));}
+            if existing.channel_id!=channel || existing.text!=request.text || existing.mentions!=request.mentions {return Ok(Err("id_conflict"));}
             if existing.expires_at<=db::now() {return Ok(Err("expired"));}
             return Ok(Ok(existing));
         }
         // Read-only retries succeed even when the storage quota is exhausted.
+        if let Some(ref sealed) = sealed {
+            let members=access::e2ee_members(&tx,a.user_id,channel)?;
+            if poknite_protocol::e2ee::members_digest(&members).as_deref()!=Some(sealed.header.members.as_str()) {return Ok(Err("members_changed"));}
+        }
         tx.commit()?;
         db::writable(c,&cfg)?;
         let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         db::active(&tx,a.device_id)?;
-        let allowed:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM memberships WHERE user_id=? AND channel_id=?)",params![a.user_id,channel],|r|r.get(0))?;
+        let allowed=access::conversation_allowed(&tx,a.user_id,channel,Permission::Send)?;
         if !allowed {return Ok(Err("forbidden"));}
-        let message=Message{id:uuid::Uuid::new_v4().to_string(),seq:0,channel_id:channel,sender_id:a.user_id,sender_name:a.user_name,text:request.text,created_at:db::now(),expires_at:db::now()+ttl};
-        tx.execute("INSERT INTO messages(id,channel_id,sender_id,device_id,client_message_id,text,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)",params![message.id,channel,message.sender_id,a.device_id,request.client_message_id,message.text,message.created_at,message.expires_at])?;
+        if let Some(ref sealed) = sealed {
+            let members=access::e2ee_members(&tx,a.user_id,channel)?;
+            if poknite_protocol::e2ee::members_digest(&members).as_deref()!=Some(sealed.header.members.as_str()) {return Ok(Err("members_changed"));}
+        }
+        access::mentions_valid(&tx,a.user_id,channel,&request.text,&request.mentions)?;
+        let name:String=tx.query_row("SELECT name FROM users WHERE id=?",[a.user_id],|r|r.get(0))?;
+        let color:String=tx.query_row("SELECT color FROM users WHERE id=?",[a.user_id],|r|r.get(0))?;
+        let message=Message{id:uuid::Uuid::new_v4().to_string(),seq:0,channel_id:channel,sender_id:a.user_id,sender_name:name,sender_color:color,text:request.text,mentions:request.mentions,created_at:db::now(),expires_at:db::now()+ttl};
+        tx.execute("INSERT INTO messages(id,channel_id,sender_id,device_id,client_message_id,text,created_at,expires_at,mentions) VALUES(?,?,?,?,?,?,?,?,?)",params![message.id,channel,message.sender_id,a.device_id,request.client_message_id,message.text,message.created_at,message.expires_at,serde_json::to_string(&message.mentions)?])?;
         let seq=tx.last_insert_rowid();tx.commit()?;Ok(Ok(Message{seq,..message}))
     }).await.map_err(database_error)?;
     let message = result.map_err(|code| match code {
+        "members_changed" => error(
+            StatusCode::CONFLICT,
+            code,
+            "Состав устройств изменился. Смените ключ разговора",
+        ),
         "id_conflict" => error(
             StatusCode::CONFLICT,
             code,
@@ -426,9 +526,11 @@ impl Drop for SessionGuard {
     }
 }
 async fn send(socket: &mut WebSocket, event: &ServerEvent) -> Result<()> {
+    let text = serde_json::to_string(event)?;
+    anyhow::ensure!(text.len() <= MAX_FRAME_BYTES, "frame_limit");
     tokio::time::timeout(
         Duration::from_secs(5),
-        socket.send(Frame::Text(serde_json::to_string(event)?.into())),
+        socket.send(Frame::Text(text.into())),
     )
     .await??;
     Ok(())
@@ -443,18 +545,41 @@ async fn pump(
 ) -> Result<bool> {
     let mut gap = false;
     loop {
-        let a = a.clone();
+        let check = a.clone();
         let after = *cursor;
-        let (messages, next, lost) = app.db.run(move |c| db::backlog(c, &a, after)).await?;
+        let (messages, next, lost) = app.db.run(move |c| db::backlog(c, &check, after)).await?;
         gap |= lost;
-        let full = messages.len() == PAGE_SIZE;
+        let high = app.db.run(|c| db::highwater(c)).await?;
+        let full = next < high;
         for message in messages {
             // Consult this connection's cancellation flag. The session-map entry
             // may already belong to a replacement connection for the same device.
             anyhow::ensure!(!*cancelled.borrow(), "session_closed");
             // A slow replay must not expose text whose TTL elapsed while sending the page.
             if message.expires_at > db::now() {
-                send(socket, &ServerEvent::Message { message, replay }).await?;
+                let _gate = app.delivery_gate.read().await;
+                let check = a.clone();
+                let channel = message.channel_id;
+                let allowed = app
+                    .db
+                    .run(move |c| {
+                        db::active(c, check.device_id)?;
+                        access::conversation_allowed(c, check.user_id, channel, Permission::Read)
+                    })
+                    .await?;
+                if !allowed {
+                    continue;
+                }
+                let notify = access::notify(&message, a.user_id);
+                send(
+                    socket,
+                    &ServerEvent::Message {
+                        message,
+                        replay,
+                        notify,
+                    },
+                )
+                .await?;
             } else {
                 gap = true;
             }
@@ -500,7 +625,11 @@ async fn connection(app: Arc<App>, a: Auth, mut cursor: i64, mut socket: WebSock
         &ServerEvent::Hello {
             user_id: a.user_id,
             device_id: a.device_id,
-            channels: list.clone(),
+            channels: if serde_json::to_vec(&list)?.len() < MAX_FRAME_BYTES - 256 {
+                list
+            } else {
+                Vec::new()
+            },
         },
     )
     .await?;
@@ -509,9 +638,12 @@ async fn connection(app: Arc<App>, a: Auth, mut cursor: i64, mut socket: WebSock
         cursor = 0;
         send(&mut socket, &ServerEvent::Reset { cursor: 0 }).await?;
     }
+    let mut known_state = stream_state(&app, a.user_id).await?;
+    send_state(&mut socket, &known_state).await?;
+    let mut known_profiles = stream_profiles(&app, a.user_id).await?;
+    send_profiles(&mut socket, &known_profiles).await?;
     let gap = pump(&app, &a, &mut socket, &mut cursor, true, &cancelled).await?;
     send(&mut socket, &ServerEvent::Synced { cursor, gap }).await?;
-    let mut known_channels = list;
     let mut ping = tokio::time::interval(Duration::from_secs(app.config.heartbeat_seconds));
     ping.tick().await;
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -528,8 +660,12 @@ async fn connection(app: Arc<App>, a: Auth, mut cursor: i64, mut socket: WebSock
                 let device=a.device_id;
                 let active=app.db.run(move |c|Ok(db::active(c,device).is_ok())).await?;
                 if !active {let _=socket.send(Frame::Close(Some(axum::extract::ws::CloseFrame{code:4001,reason:"revoked".into()}))).await;break;}
-                let user=a.user_id;let channels=app.db.run(move |c|db::channels(c,user)).await?;
-                if channels!=known_channels {known_channels=channels.clone();send(&mut socket,&ServerEvent::Channels{channels}).await?;}
+                let _gate=app.delivery_gate.read().await;
+                let state=stream_state(&app,a.user_id).await?;
+                if serde_json::to_string(&state)?!=serde_json::to_string(&known_state)? {known_state=state;send_state(&mut socket,&known_state).await?;}
+                let profiles=stream_profiles(&app,a.user_id).await?;
+                if profiles!=known_profiles {known_profiles=profiles;send_profiles(&mut socket,&known_profiles).await?;}
+                drop(_gate);
                 pump(&app,&a,&mut socket,&mut cursor,false,&cancelled).await?;
             }
             _=ping.tick()=> {if awaiting.is_none() {tokio::time::timeout(Duration::from_secs(5),socket.send(Frame::Ping(vec![1].into()))).await??;awaiting=Some(Instant::now());}}
@@ -589,4 +725,224 @@ pub async fn listen_admin(app: Arc<App>) -> Result<()> {
 }
 pub fn is_loopback(ip: IpAddr) -> bool {
     ip.is_loopback()
+}
+
+async fn upgrade_required() -> Failure {
+    error(
+        StatusCode::UPGRADE_REQUIRED,
+        "upgrade_required",
+        "Обновите Poknite: сервер и клиенты используют API v2",
+    )
+}
+async fn send_state(socket: &mut WebSocket, state: &ServerEvent) -> Result<()> {
+    if serde_json::to_vec(state)?.len() <= MAX_FRAME_BYTES {
+        return send(socket, state).await;
+    }
+    if let ServerEvent::State {
+        profile,
+        contacts,
+        channels,
+    } = state
+    {
+        let count = contacts
+            .len()
+            .max(channels.len())
+            .div_ceil(CATALOG_PAGE_SIZE)
+            .max(1);
+        for i in 0..count {
+            let start = i * CATALOG_PAGE_SIZE;
+            send(
+                socket,
+                &ServerEvent::StatePart {
+                    profile: if i == 0 { Some(profile.clone()) } else { None },
+                    contacts: contacts
+                        .iter()
+                        .skip(start)
+                        .take(CATALOG_PAGE_SIZE)
+                        .cloned()
+                        .collect(),
+                    channels: channels
+                        .iter()
+                        .skip(start)
+                        .take(CATALOG_PAGE_SIZE)
+                        .cloned()
+                        .collect(),
+                    first: i == 0,
+                    last: i + 1 == count,
+                },
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+async fn stream_profiles(app: &App, id: i64) -> Result<Vec<User>> {
+    app.db.run(move |c| access::visible_profiles(c, id)).await
+}
+async fn send_profiles(socket: &mut WebSocket, users: &[User]) -> Result<()> {
+    for chunk in users.chunks(CATALOG_PAGE_SIZE) {
+        send(
+            socket,
+            &ServerEvent::Profiles {
+                users: chunk.to_vec(),
+            },
+        )
+        .await?;
+    }
+    Ok(())
+}
+async fn stream_state(app: &App, id: i64) -> Result<ServerEvent> {
+    app.db
+        .run(move |c| {
+            let tx = c.transaction()?;
+            Ok(ServerEvent::State {
+                profile: access::user(&tx, id)?,
+                contacts: access::contacts(&tx, id)?,
+                channels: access::conversations(&tx, id)?,
+            })
+        })
+        .await
+}
+async fn profile(State(app): State<Arc<App>>, h: HeaderMap) -> ApiResult<Json<User>> {
+    let a = auth(&app, &h).await?;
+    app.db
+        .run(move |c| {
+            let tx = c.transaction()?;
+            db::active(&tx, a.device_id)?;
+            access::user(&tx, a.user_id)
+        })
+        .await
+        .map(Json)
+        .map_err(database_error)
+}
+async fn rename_profile(
+    State(app): State<Arc<App>>,
+    h: HeaderMap,
+    Json(r): Json<ProfileRequest>,
+) -> ApiResult<Json<User>> {
+    let a = auth(&app, &h).await?;
+    app.limit(format!("profile:{}", a.device_id), 30)?;
+    let cfg = app.config.clone();
+    let _gate = app.delivery_gate.write().await;
+    let result = app
+        .db
+        .run(move |c| {
+            db::writable(c, &cfg)?;
+            let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            db::active(&tx, a.device_id)?;
+            access::require(&tx, a.user_id, Permission::Profile)?;
+            anyhow::ensure!(
+                valid_name(&r.name) && r.name == r.name.trim(),
+                "invalid_input"
+            );
+            if let Some(color) = r.color {
+                anyhow::ensure!(valid_color(&color), "invalid_input");
+                tx.execute(
+                    "UPDATE users SET color=? WHERE id=?",
+                    params![color.to_lowercase(), a.user_id],
+                )?;
+            }
+            tx.execute(
+                "UPDATE users SET name=? WHERE id=?",
+                params![r.name, a.user_id],
+            )?;
+            let u = access::user(&tx, a.user_id)?;
+            tx.commit()?;
+            Ok(u)
+        })
+        .await
+        .map_err(database_error)?;
+    app.wake();
+    Ok(Json(result))
+}
+async fn contacts(
+    State(app): State<Arc<App>>,
+    h: HeaderMap,
+    Query(page): Query<ListPage>,
+) -> ApiResult<Json<Vec<User>>> {
+    let a = auth(&app, &h).await?;
+    app.db
+        .run(move |c| {
+            let tx = c.transaction()?;
+            db::active(&tx, a.device_id)?;
+            access::require(&tx, a.user_id, Permission::Contacts)?;
+            Ok(page.take(access::contacts(&tx, a.user_id)?))
+        })
+        .await
+        .map(Json)
+        .map_err(database_error)
+}
+async fn e2ee_members(
+    State(app): State<Arc<App>>,
+    h: HeaderMap,
+    Path(id): Path<i64>,
+    Query(page): Query<ListPage>,
+) -> ApiResult<Json<Vec<poknite_protocol::e2ee::Member>>> {
+    let a = auth(&app, &h).await?;
+    app.db
+        .run(move |c| {
+            let tx = c.transaction()?;
+            db::active(&tx, a.device_id)?;
+            Ok(page.take(access::e2ee_members(&tx, a.user_id, id)?))
+        })
+        .await
+        .map(Json)
+        .map_err(database_error)
+}
+async fn participants(
+    State(app): State<Arc<App>>,
+    h: HeaderMap,
+    Path(id): Path<i64>,
+    Query(page): Query<ListPage>,
+) -> ApiResult<Json<Vec<User>>> {
+    let a = auth(&app, &h).await?;
+    app.db
+        .run(move |c| {
+            let tx = c.transaction()?;
+            db::active(&tx, a.device_id)?;
+            Ok(page.take(access::participants(&tx, a.user_id, id)?))
+        })
+        .await
+        .map(Json)
+        .map_err(database_error)
+}
+async fn direct(
+    State(app): State<Arc<App>>,
+    h: HeaderMap,
+    Json(r): Json<DirectRequest>,
+) -> ApiResult<Json<Conversation>> {
+    let a = auth(&app, &h).await?;
+    app.limit(format!("direct:{}", a.device_id), 30)?;
+    let cfg = app.config.clone();
+    let result=app.db.run(move|c|{db::writable(c,&cfg)?;let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;db::active(&tx,a.device_id)?;access::require(&tx,a.user_id,Permission::Direct)?;
+        let lo=a.user_id.min(r.user_id);let hi=a.user_id.max(r.user_id);
+        let existing:Option<i64>=tx.query_row("SELECT id FROM channels WHERE kind='direct' AND user_lo=? AND user_hi=?",params![lo,hi],|r|r.get(0)).optional()?;
+        let id=if let Some(id)=existing{id}else{anyhow::ensure!(access::common_channel(&tx,a.user_id,r.user_id)?,"forbidden");anyhow::ensure!(access::allowed(&tx,r.user_id,Permission::Direct)?,"forbidden");let count:i64=tx.query_row("SELECT COUNT(*) FROM channels WHERE kind='direct' AND (user_lo=? OR user_hi=?)",[a.user_id,a.user_id],|r|r.get(0))?;anyhow::ensure!(count<64,"channel_limit");tx.execute("INSERT INTO channels(name,kind,user_lo,user_hi) VALUES(?,'direct',?,?)",params![format!("direct:{}",uuid::Uuid::new_v4()),lo,hi])?;tx.last_insert_rowid()};
+        let conversation=access::conversations(&tx,a.user_id)?.into_iter().find(|v|v.id==id).ok_or_else(||anyhow::anyhow!("forbidden"))?;tx.commit()?;Ok(conversation)}).await.map_err(database_error)?;
+    app.wake();
+    Ok(Json(result))
+}
+impl App {
+    pub(crate) async fn cancel_inactive(&self) -> Result<()> {
+        let ids = self
+            .sessions
+            .lock()
+            .unwrap()
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        let inactive = self
+            .db
+            .run(move |c| {
+                Ok(ids
+                    .into_iter()
+                    .filter(|id| db::active(c, *id).is_err())
+                    .collect::<Vec<_>>())
+            })
+            .await?;
+        for id in inactive {
+            self.cancel(id);
+        }
+        Ok(())
+    }
 }

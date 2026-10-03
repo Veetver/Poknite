@@ -47,7 +47,6 @@ class ConnectionService : Service() {
         if (!networkRegistered) {
             getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(network)
             networkRegistered = true
-            app.io.execute { runCatching { deliver(true); deliver(false) } }
             reconnectNow()
         }
         status(app.settings.status)
@@ -78,8 +77,9 @@ class ConnectionService : Service() {
             if (stopping || g != generation.get()) return@execute
             try {
                 val endpoint = canonicalEndpoint(app.settings.endpoint, BuildConfig.DEBUG)
-                val wsUrl = (if (endpoint.startsWith("https:")) endpoint.replaceFirst("https:", "wss:") else endpoint.replaceFirst("http:", "ws:")) + "/v1/stream?after=${app.store.cursor()}"
+                val wsUrl = (if (endpoint.startsWith("https:")) endpoint.replaceFirst("https:", "wss:") else endpoint.replaceFirst("http:", "ws:")) + "/v2/stream?after=${app.store.cursor()}"
                 val request = Request.Builder().url(wsUrl).header("Authorization", "Bearer ${app.settings.token}").build()
+                var stateParts:JSONObject?=null
                 val newSocket = app.http.newWebSocket(request, object : WebSocketListener() {
                     override fun onMessage(webSocket: WebSocket, text: String) {
                         if (g != generation.get() || stopping) return
@@ -92,19 +92,29 @@ class ConnectionService : Service() {
                                 when (j.getString("type")) {
                                     "hello" -> {
                                         require(j.getLong("user_id") == app.settings.userId && j.getLong("device_id") == app.settings.deviceId)
-                                        app.store.updateChannels(j.getJSONArray("channels")); status("Восстановление истории…")
+                                        if(j.getJSONArray("channels").length()>0)updateChannels(j.getJSONArray("channels")); status("Восстановление истории…")
                                     }
-                                    "channels" -> { app.store.updateChannels(j.getJSONArray("channels")); app.changed() }
+                                    "channels" -> { updateChannels(j.getJSONArray("channels")); app.changed() }
+                                    "profiles" -> { app.store.updateUsers(j.getJSONArray("users"));app.changed() }
+                                    "state_part" -> {
+                                        if(j.getBoolean("first")) stateParts=JSONObject().put("profile",j.getJSONObject("profile")).put("contacts",org.json.JSONArray()).put("channels",org.json.JSONArray())
+                                        val parts=stateParts ?: error("Неполное состояние")
+                                        for(key in listOf("contacts","channels")){val rows=j.getJSONArray(key);val all=parts.getJSONArray(key);for(i in 0 until rows.length())all.put(rows.get(i))}
+                                        if(j.getBoolean("last")){applyState(parts);stateParts=null}
+                                    }
+                                    "state" -> {
+                                        applyState(j)
+                                    }
                                     "message" -> {
                                         val replay = j.getBoolean("replay")
-                                        app.store.receive(WireMessage.parse(j.getJSONObject("message")), replay, app.settings.userId)
+                                        app.store.receive(app.e2ee.decodeWire(j.getJSONObject("message")), replay, app.settings.userId, notify = j.getBoolean("notify"))
                                         if (!replay) { deliver(false); app.changed() }
                                     }
                                     "progress" -> { app.store.progress(j.getLong("cursor")); acknowledge(webSocket, app.store.cursor()) }
                                     "reset" -> { app.store.progress(j.getLong("cursor"), true); acknowledge(webSocket, app.store.cursor()) }
                                     "synced" -> {
                                         app.store.progress(j.getLong("cursor")); acknowledge(webSocket, app.store.cursor())
-                                        deliver(true); retry = 0; app.online = true
+                                        deliver(true); deliver(false); retry = 0; app.online = true
                                         status(if (j.optBoolean("gap")) "Подключено · часть сообщений уже истекла" else "Подключено")
                                     }
                                     else -> error("Неизвестная версия протокола")
@@ -124,6 +134,16 @@ class ConnectionService : Service() {
             } catch (_: Exception) { failed(g, "Не удалось подключиться") }
         }
     }
+    private fun applyState(j:JSONObject) {
+        val profile=j.getJSONObject("profile");app.settings.profile=profile.toString()
+        val contacts=j.getJSONArray("contacts");app.settings.contacts=contacts.toString()
+        app.store.updateUsers(contacts);app.store.updateUsers(org.json.JSONArray().put(profile));updateChannels(j.getJSONArray("channels"));app.changed()
+    }
+    private fun updateChannels(channels: org.json.JSONArray) {
+        val cancelled=app.store.updateChannels(channels)
+        cancelled.forEach { manager.cancel(it,2) }
+        if(cancelled.isNotEmpty()) manager.cancel("summary",2)
+    }
     private fun acknowledge(ws: WebSocket, cursor: Long) { check(ws.send(JSONObject().put("type", "ack").put("cursor", cursor).toString())) }
     private fun failed(g: Long, reason: String) {
         main.post {
@@ -133,7 +153,7 @@ class ConnectionService : Service() {
             main.postDelayed({ connect() }, retryDelay(retry++))
         }
     }
-    private fun revoked(g: Long) { main.post { if (g == generation.get()) { app.settings.enabled = false; shutdown("Устройство отозвано · нужно новое приглашение") } } }
+    private fun revoked(g: Long) { main.post { if (g == generation.get()) { app.settings.enabled = false; updateChannels(org.json.JSONArray()); shutdown("Устройство отозвано · нужно новое приглашение") } } }
     private fun deliver(replay: Boolean) {
         val pending = app.store.pending(replay)
         if (pending.isEmpty() || !manager.areNotificationsEnabled() || Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return

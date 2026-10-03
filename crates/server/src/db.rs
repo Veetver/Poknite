@@ -1,6 +1,6 @@
 use crate::config::Config;
 use anyhow::{Context, Result, ensure};
-use poknite_protocol::{Channel, Device, Message};
+use poknite_protocol::{Channel, Device, Mention, Message};
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 use std::{
@@ -34,7 +34,7 @@ pub fn private_dir(path: &Path) -> Result<()> {
 }
 pub fn open(config: &Config) -> Result<Connection> {
     private_dir(&config.data_dir)?;
-    let conn = Connection::open(config.database())?;
+    let mut conn = Connection::open(config.database())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -42,7 +42,7 @@ pub fn open(config: &Config) -> Result<Connection> {
     }
     conn.busy_timeout(Duration::from_secs(3))?;
     let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    ensure!(version <= 1, "База создана более новой версией Poknite");
+    ensure!(version <= 3, "База создана более новой версией Poknite");
     if version == 0 {
         conn.execute_batch("PRAGMA page_size=4096;PRAGMA auto_vacuum=INCREMENTAL;")?;
     }
@@ -58,8 +58,31 @@ pub fn open(config: &Config) -> Result<Connection> {
         actual <= (config.database_bytes / 4096) as i64,
         "База превышает настроенный бюджет; сначала освободите место со старой конфигурацией"
     );
-    if version == 0 {
-        conn.execute_batch(include_str!("schema.sql"))?;
+    if version == 1 {
+        let backup = config
+            .data_dir
+            .join(format!("server.v1.{}.backup.db", uuid::Uuid::new_v4()));
+        conn.execute("VACUUM INTO ?", [backup.to_string_lossy().as_ref()])
+            .context("Не удалось сохранить резервную копию перед миграцией")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&backup, std::fs::Permissions::from_mode(0o600))?;
+        }
+    }
+    if version < 3 {
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let current: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if current == 0 {
+            tx.execute_batch(include_str!("schema.sql"))?;
+        }
+        if current < 2 {
+            tx.execute_batch(include_str!("migration_v2.sql"))?;
+        }
+        if current < 3 {
+            tx.execute_batch(include_str!("migration_v3.sql"))?;
+        }
+        tx.commit()?;
     }
     conn.execute_batch("CREATE INDEX IF NOT EXISTS messages_device ON messages(device_id)")?;
     Ok(conn)
@@ -103,12 +126,12 @@ pub struct Auth {
     pub user_name: String,
 }
 pub fn authenticate(c: &Connection, token_hash: &str) -> Result<Option<Auth>> {
-    Ok(c.query_row("SELECT d.id,u.id,u.name FROM devices d JOIN users u ON u.id=d.user_id WHERE d.token_hash=? AND d.revoked=0",[token_hash],|r|Ok(Auth{device_id:r.get(0)?,user_id:r.get(1)?,user_name:r.get(2)?})).optional()?)
+    Ok(c.query_row("SELECT d.id,u.id,u.name FROM devices d JOIN users u ON u.id=d.user_id WHERE d.token_hash=? AND d.revoked=0 AND u.disabled=0",[token_hash],|r|Ok(Auth{device_id:r.get(0)?,user_id:r.get(1)?,user_name:r.get(2)?})).optional()?)
 }
 pub fn active(c: &Connection, device: i64) -> Result<()> {
     ensure!(
         c.query_row(
-            "SELECT EXISTS(SELECT 1 FROM devices WHERE id=? AND revoked=0)",
+            "SELECT EXISTS(SELECT 1 FROM devices d JOIN users u ON u.id=d.user_id WHERE d.id=? AND d.revoked=0 AND u.disabled=0)",
             [device],
             |r| r.get::<_, bool>(0)
         )?,
@@ -117,14 +140,7 @@ pub fn active(c: &Connection, device: i64) -> Result<()> {
     Ok(())
 }
 pub fn channels(c: &Connection, user: i64) -> Result<Vec<Channel>> {
-    let mut q=c.prepare("SELECT c.id,c.name FROM channels c JOIN memberships m ON m.channel_id=c.id WHERE m.user_id=? ORDER BY c.id")?;
-    Ok(q.query_map([user], |r| {
-        Ok(Channel {
-            id: r.get(0)?,
-            name: r.get(1)?,
-        })
-    })?
-    .collect::<rusqlite::Result<Vec<_>>>()?)
+    crate::access::conversations(c, user)
 }
 pub fn devices(c: &Connection, a: &Auth) -> Result<Vec<Device>> {
     let mut q = c.prepare(
@@ -148,13 +164,16 @@ pub fn message_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
         channel_id: r.get(2)?,
         sender_id: r.get(3)?,
         sender_name: r.get(4)?,
+        sender_color: r.get(9)?,
         text: r.get(5)?,
         created_at: r.get(6)?,
         expires_at: r.get(7)?,
+        mentions: serde_json::from_str::<Vec<Mention>>(&r.get::<_, String>(8)?).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, Box::new(e))
+        })?,
     })
 }
-pub const MESSAGE_COLUMNS: &str =
-    "m.seq,m.id,m.channel_id,m.sender_id,u.name,m.text,m.created_at,m.expires_at";
+pub const MESSAGE_COLUMNS: &str = "m.seq,m.id,m.channel_id,m.sender_id,u.name,m.text,m.created_at,m.expires_at,m.mentions,u.color";
 pub fn highwater(c: &Connection) -> Result<i64> {
     Ok(c.query_row(
         "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name='messages'),0)",
@@ -167,20 +186,39 @@ pub fn backlog(c: &mut Connection, a: &Auth, after: i64) -> Result<(Vec<Message>
     active(&tx, a.device_id)?;
     let high = highwater(&tx)?;
     let current = now();
-    let gap:bool=tx.query_row("SELECT lost_through>? OR EXISTS(SELECT 1 FROM messages m JOIN memberships g ON g.channel_id=m.channel_id WHERE g.user_id=devices.user_id AND m.seq>? AND m.expires_at<=?) FROM devices WHERE id=?",params![after,after,current,a.device_id],|r|r.get(0))?;
-    let messages = {
-        let sql = format!(
-            "SELECT {MESSAGE_COLUMNS} FROM messages m JOIN users u ON u.id=m.sender_id JOIN memberships g ON g.channel_id=m.channel_id WHERE g.user_id=? AND m.seq>? AND m.expires_at>? ORDER BY m.seq LIMIT 50"
-        );
+    let mut gap: bool = tx.query_row(
+        "SELECT lost_through>? FROM devices WHERE id=?",
+        params![after, a.device_id],
+        |r| r.get(0),
+    )?;
+    let sql = format!(
+        "SELECT {MESSAGE_COLUMNS} FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.seq>? ORDER BY m.seq LIMIT 50"
+    );
+    let candidates = {
         let mut q = tx.prepare(&sql)?;
-        q.query_map(params![a.user_id, after, current], message_row)?
+        q.query_map([after], message_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?
     };
-    let next = if messages.len() == 50 {
-        messages.last().unwrap().seq
+    let next = if candidates.len() == 50 {
+        candidates.last().unwrap().seq
     } else {
         high
     };
+    let mut messages = Vec::new();
+    for message in candidates {
+        if crate::access::conversation_allowed(
+            &tx,
+            a.user_id,
+            message.channel_id,
+            poknite_protocol::Permission::Read,
+        )? {
+            if message.expires_at > current {
+                messages.push(message);
+            } else {
+                gap = true;
+            }
+        }
+    }
     tx.commit()?;
     Ok((messages, next, gap))
 }
@@ -195,7 +233,35 @@ pub fn writable(c: &Connection, config: &Config) -> Result<()> {
 pub fn cleanup(c: &mut Connection) -> Result<usize> {
     let tx = c.transaction()?;
     let n = now();
-    tx.execute("UPDATE devices SET lost_through=MAX(lost_through,COALESCE((SELECT MAX(m.seq) FROM messages m JOIN memberships g ON g.channel_id=m.channel_id WHERE g.user_id=devices.user_id AND m.seq>devices.acked AND m.seq IN(SELECT seq FROM messages WHERE expires_at<=? ORDER BY expires_at LIMIT 256)),0)) WHERE revoked=0",[n])?;
+    let expired: Vec<(i64, i64)> = {
+        let mut q = tx.prepare(
+            "SELECT seq,channel_id FROM messages WHERE expires_at<=? ORDER BY expires_at LIMIT 256",
+        )?;
+        q.query_map([n], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    let devices: Vec<(i64, i64, i64)> = {
+        let mut q = tx.prepare("SELECT id,user_id,acked FROM devices WHERE revoked=0")?;
+        q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    for (device, user, acked) in devices {
+        for &(seq, channel) in &expired {
+            if seq > acked
+                && crate::access::conversation_allowed(
+                    &tx,
+                    user,
+                    channel,
+                    poknite_protocol::Permission::Read,
+                )?
+            {
+                tx.execute(
+                    "UPDATE devices SET lost_through=MAX(lost_through,?) WHERE id=?",
+                    params![seq, device],
+                )?;
+            }
+        }
+    }
     let removed=tx.execute("DELETE FROM messages WHERE seq IN(SELECT seq FROM messages WHERE expires_at<=? ORDER BY expires_at LIMIT 256)",[n])?;
     tx.execute("DELETE FROM invitations WHERE expires_at<=?", [n])?;
     tx.execute("DELETE FROM devices WHERE revoked=1 AND NOT EXISTS(SELECT 1 FROM messages WHERE messages.device_id=devices.id)",[])?;

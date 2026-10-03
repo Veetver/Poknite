@@ -97,7 +97,7 @@ def run(binary, report_path):
         data = root / "data"
 
         def write_config(cert, key, retention=86400):
-            config.write_text(f'listen="127.0.0.1:{port}"\ndata_dir="{data}"\ncertificate="{cert}"\nprivate_key="{key}"\nretention_seconds={retention}\n')
+            config.write_text(f'listen="127.0.0.1:{port}"\ndata_dir="{data}"\ne2ee_required=false\ncertificate="{cert}"\nprivate_key="{key}"\nretention_seconds={retention}\n')
 
         write_config(first_cert, first_key)
         subprocess.run([str(binary), "--config", str(config), "init"], check=True, stdout=subprocess.DEVNULL)
@@ -128,7 +128,7 @@ def run(binary, report_path):
             receive_until(ws, "synced")
             checks["trusted_wss"] = True
             identity = str(uuid.uuid4())
-            old = json_request(base, "/v1/channels/1/messages", token,
+            old = json_request(base, "/v2/conversations/1/messages", token,
                                {"client_message_id": identity, "text": "TLS fixture"}, context)
             received = receive_until(ws, "message")
             assert received["message"]["id"] == old["id"]
@@ -141,13 +141,13 @@ def run(binary, report_path):
             fingerprint_after = peer_fingerprint(port, context)
             assert fingerprint_after != fingerprint
             checks["valid_rotation"] = True
-            new = json_request(base, "/v1/channels/1/messages", token,
+            new = json_request(base, "/v2/conversations/1/messages", token,
                                {"client_message_id": str(uuid.uuid4()), "text": "After rotation"}, context)
             assert new["expires_at"] - new["created_at"] == 120
             received = receive_until(ws, "message")
             assert received["message"]["id"] == new["id"]
             ws.ack(new["seq"])
-            retry = json_request(base, "/v1/channels/1/messages", token,
+            retry = json_request(base, "/v2/conversations/1/messages", token,
                                  {"client_message_id": identity, "text": "TLS fixture"}, context)
             assert retry == old
             checks["existing_stream_survives_rotation"] = checks["retention_only_changes_new_messages"] = True

@@ -3,6 +3,7 @@ data_dir = "/var/lib/poknite"
 certificate = "/etc/poknite/cert.pem"
 private_key = "/etc/poknite/key.pem"
 retention_seconds = 86400
+e2ee_required = true
 max_connections = 60
 max_users = 20
 max_devices_per_user = 3
@@ -10,3 +11,11 @@ database_bytes = 33554432
 wal_bytes = 4194304
 heartbeat_seconds = 120
 pong_timeout_seconds = 30
+
+# Отдельный административный HTTPS. По умолчанию выключен.
+# Для LAN/VPN задайте конкретный адрес интерфейса и доверенные CIDR,
+# ограничьте порт firewall; см. docs/management.md.
+[management]
+enabled = false
+listen = "127.0.0.1:8444"
+allowed_subnets = ["127.0.0.0/8", "::1/128"]

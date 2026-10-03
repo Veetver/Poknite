@@ -42,7 +42,7 @@ def run(binary, image, report_path, tmpfs_bytes):
                 "-keyout", root / "ca.key", "-out", root / "ca.pem", "-subj", "/CN=Poknite disposable ENOSPC CA",
                 "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign")
         certificate(root, "server")
-        root.joinpath("poknite.toml").write_text('listen="0.0.0.0:8443"\ndata_dir="/data"\ncertificate="/fixture/server.pem"\nprivate_key="/fixture/server.key"\n')
+        root.joinpath("poknite.toml").write_text('listen="0.0.0.0:8443"\ndata_dir="/data"\ne2ee_required=false\ncertificate="/fixture/server.pem"\nprivate_key="/fixture/server.key"\n')
         context = ssl.create_default_context(cafile=str(root / "ca.pem"))
         reserved = socket.socket()
         reserved.bind(("127.0.0.1", 0))
@@ -77,7 +77,7 @@ def run(binary, image, report_path, tmpfs_bytes):
             tokens = []
             for n in range(1, fixture_devices + 1):
                 invite = docker("exec", name, "cat", f"/data/invite{n}")
-                enrolled = json_request(base, "/v1/devices/enroll", body={"invitation": invite, "device_name": f"Disk fixture {n}"}, context=context)
+                enrolled = json_request(base, "/v2/devices/enroll", body={"invitation": invite, "device_name": f"Disk fixture {n}"}, context=context)
                 tokens.append(enrolled["token"])
                 docker("exec", name, "rm", f"/data/invite{n}")
             marker = "disk-full-fixture-" + secrets.token_hex(12)
@@ -89,7 +89,7 @@ def run(binary, image, report_path, tmpfs_bytes):
                 text += "x" * (4096 - len(text))
                 payload = {"client_message_id": str(uuid.uuid4()), "text": text}
                 try:
-                    message = json_request(base, "/v1/channels/1/messages", token, payload, context)
+                    message = json_request(base, "/v2/conversations/1/messages", token, payload, context)
                     confirmed.append((token, payload, message))
                 except urllib.error.HTTPError as error:
                     rejected_status = error.code
@@ -126,13 +126,13 @@ def run(binary, image, report_path, tmpfs_bytes):
             token, payload, original = confirmed[0]
             retry_status = 200
             try:
-                retried = json_request(base, "/v1/channels/1/messages", token, payload, context)
+                retried = json_request(base, "/v2/conversations/1/messages", token, payload, context)
                 assert retried["id"] == original["id"] and retried["text"] == original["text"]
             except urllib.error.HTTPError as error:
                 retry_status = error.code
                 assert retry_status in (503, 507), "Unexpected retry failure"
             assert json_request(base, "/healthz", context=context)["status"] == "ok"
-            assert json_request(base, "/v1/channels", tokens[0], context=context)[0]["id"] == 1
+            assert json_request(base, "/v2/channels", tokens[0], context=context)[0]["id"] == 1
             received = {}
             ws = WebSocket("localhost", port, tokens[0], tls=context)
             try:

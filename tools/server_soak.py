@@ -32,7 +32,7 @@ class WebSocket:
         if tls is not None:
             self.socket = tls.wrap_socket(self.socket, server_hostname=host)
         key = base64.b64encode(secrets.token_bytes(16)).decode()
-        request = (f"GET /v1/stream?after={cursor} HTTP/1.1\r\nHost: {host}:{port}\r\n"
+        request = (f"GET /v2/stream?after={cursor} HTTP/1.1\r\nHost: {host}:{port}\r\n"
                    "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n"
                    f"Sec-WebSocket-Key: {key}\r\nAuthorization: Bearer {token}\r\n\r\n")
         self.socket.sendall(request.encode())
@@ -158,7 +158,7 @@ def run(args):
         reserved.close()
         config = root / "poknite.toml"
         data = root / "data"
-        config.write_text(f'listen = "127.0.0.1:{port}"\ndata_dir = "{data}"\nretention_seconds = {args.retention}\n')
+        config.write_text(f'listen = "127.0.0.1:{port}"\ndata_dir = "{data}"\ne2ee_required=false\nretention_seconds = {args.retention}\n')
         subprocess.run([str(binary), "--config", str(config), "init"], check=True, stdout=subprocess.DEVNULL)
         tokens = [secrets.token_hex(32) for _ in range(args.devices)]
         with sqlite3.connect(data / "server.db") as connection:
@@ -199,7 +199,7 @@ def run(args):
                     text = "resource-probe " + str(published) + " "
                     text += "x" * max(0, args.message_bytes - len(text))
                     try:
-                        result = json_request(base, "/v1/channels/1/messages", tokens[0],
+                        result = json_request(base, "/v2/conversations/1/messages", tokens[0],
                                               {"client_message_id": str(uuid.uuid4()), "text": text})
                         sent[result["id"]] = now
                         receipts[result["id"]] = set()

@@ -27,4 +27,9 @@ class WireTest {
         assertEquals(72000, retryDelay(20, 1.0))
         assertNotEquals(newClientId(), newClientId())
     }
+    @Test fun rgbColorAcceptsAllComponentsAndRejectsInvalidValues() {
+        assertEquals("#ff8000",rgbColor("255, 128, 0"));assertEquals("#12abef",rgbColor("#12ABef"));assertEquals("255,128,0",rgbString("#ff8000"))
+        for(value in listOf("256,0,0","-1,2,3","1,2","#12zzef"))assertThrows(IllegalArgumentException::class.java){rgbColor(value)}
+    }
+
 }

@@ -1,0 +1,39 @@
+{
+  "description": "PUBLIC TEST VECTOR; never use this key or nonce for real messages. Generated independently with Python cryptography AESGCM.",
+  "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "nonce": "AAECAwQFBgcICQoL",
+  "members": [
+    {
+      "user_id": 1,
+      "device_id": 1
+    },
+    {
+      "user_id": 2,
+      "device_id": 2
+    }
+  ],
+  "members_digest": "VoaoU7QD-oTRlHsA_XBAhPQjNBosHICry2G0v_Ik0fw",
+  "header": {
+    "alg": "dir",
+    "enc": "A256GCM",
+    "v": 1,
+    "kid": "Yw3NKWbEM2aRElRIu7JbT_QSpJxzLbLIq8G4WBvXEN0",
+    "aud": "https://example.test",
+    "cid": 1,
+    "sid": 1,
+    "did": 1,
+    "mid": "00000000-0000-4000-8000-000000000001",
+    "members": "VoaoU7QD-oTRlHsA_XBAhPQjNBosHICry2G0v_Ik0fw",
+    "mentions": [
+      {
+        "user_id": 2,
+        "start": 7,
+        "end": 13
+      }
+    ]
+  },
+  "text": "Привет @Борис\nТест шифрования",
+  "sealed": "e2ee:eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIiwidiI6MSwia2lkIjoiWXczTktXYkVNMmFSRWxSSXU3SmJUX1FTcEp4ekxiTElxOEc0V0J2WEVOMCIsImF1ZCI6Imh0dHBzOi8vZXhhbXBsZS50ZXN0IiwiY2lkIjoxLCJzaWQiOjEsImRpZCI6MSwibWlkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwibWVtYmVycyI6IlZvYW9VN1FELW9UUmxIc0FfWEJBaFBRak5Cb3NISUNyeTJHMHZfSWswZnciLCJtZW50aW9ucyI6W3sidXNlcl9pZCI6Miwic3RhcnQiOjcsImVuZCI6MTN9XX0..AAECAwQFBgcICQoL.l50HmxVdEqld9EYJkamo_FNoVrQgw479MrdHVai4gWODMH90f3nDHKUkr1NYNfiIPuSwNYtZ.qYHd1pj6QBgwcdoECxdeLg",
+  "code": "poknite-key-v1:eyJ2IjoxLCJhdWQiOiJodHRwczovL2V4YW1wbGUudGVzdCIsImNpZCI6MSwibWVtYmVycyI6IlZvYW9VN1FELW9UUmxIc0FfWEJBaFBRak5Cb3NISUNyeTJHMHZfSWswZnciLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "sealed_android": "e2ee:eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIiwidiI6MSwia2lkIjoiWXczTktXYkVNMmFSRWxSSXU3SmJUX1FTcEp4ekxiTElxOEc0V0J2WEVOMCIsImF1ZCI6Imh0dHBzOlwvXC9leGFtcGxlLnRlc3QiLCJjaWQiOjEsInNpZCI6MSwiZGlkIjoxLCJtaWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDEiLCJtZW1iZXJzIjoiVm9hb1U3UUQtb1RSbEhzQV9YQkFoUFFqTkJvc0hJQ3J5Mkcwdl9JazBmdyIsIm1lbnRpb25zIjpbeyJ1c2VyX2lkIjoyLCJzdGFydCI6NywiZW5kIjoxM31dfQ..AAECAwQFBgcICQoL.l50HmxVdEqld9EYJkamo_FNoVrQgw479MrdHVai4gWODMH90f3nDHKUkr1NYNfiIPuSwNYtZ.5-I30bE8bqoXfs1WK6QrAg"
+}

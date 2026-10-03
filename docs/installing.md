@@ -14,15 +14,15 @@ Gradle, Android SDK и исходники проекта не нужны.
 Архивы **Source code (zip)** и **Source code (tar.gz)** содержат исходники.
 Чтобы установить готовую программу, скачайте файл `poknite-…` из таблицы.
 
-Примеры ниже приведены для версии 0.1.0. Если устанавливаете другую версию,
-замените `0.1.0` в имени файла на номер скачанного релиза.
+Примеры ниже приведены для версии 0.2.0. Если устанавливаете другую версию,
+замените `0.2.0` в имени файла на номер скачанного релиза.
 
 ## Linux: сервер и настольный клиент
 
 Распакуйте скачанный архив и перейдите в его каталог:
 
 ```sh
-tar -xzf poknite-0.1.0-linux-x64.tar.gz
+tar -xzf poknite-0.2.0-linux-x64.tar.gz
 cd poknite
 ```
 
@@ -45,7 +45,7 @@ install -m 0755 ./poknite ~/.local/bin/poknite
 ## Windows
 
 1. Установите [Microsoft Visual C++ v14 Redistributable x64](https://aka.ms/vc14/vc_redist.x64.exe), если он ещё не установлен. Это системные библиотеки для запуска клиента; подробнее — в [документации Microsoft](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
-2. Скачайте `poknite-0.1.0-windows-x64.zip`.
+2. Скачайте `poknite-0.2.0-windows-x64.zip`.
 3. Выберите «Извлечь всё» и распакуйте архив в постоянный каталог.
 4. Откройте каталог `poknite` и запустите `poknite.exe`.
 5. Введите HTTPS-адрес сервера, одноразовое приглашение и имя устройства.
@@ -61,7 +61,7 @@ Windows может показывать предупреждение при за
 
 ## Android
 
-1. Скачайте `poknite-0.1.0-android.apk` на телефон и откройте файл.
+1. Скачайте `poknite-0.2.0-android.apk` на телефон и откройте файл.
 2. Если Android запросит разрешение, разрешите установку из этого источника
    для браузера или файлового менеджера, которым открыли APK.
 3. Установите приложение и откройте Poknite.
@@ -91,10 +91,10 @@ APK также содержит собственную подпись Android.
 При установленной актуальной GitHub CLI можно проверить скачанный файл:
 
 ```sh
-gh attestation verify poknite-0.1.0-linux-x64.tar.gz \
+gh attestation verify poknite-0.2.0-linux-x64.tar.gz \
   --repo Veetver/Poknite \
   --bundle attestation.sigstore.json \
-  --cert-identity 'https://github.com/Veetver/Poknite/.github/workflows/release.yml@refs/tags/v0.1.0'
+  --cert-identity 'https://github.com/Veetver/Poknite/.github/workflows/release.yml@refs/tags/v0.2.0'
 ```
 
 Для Windows-архива или APK замените имя файла. Для другой версии также замените

@@ -232,3 +232,30 @@ pub fn autostart(
     }
     Ok(())
 }
+
+#[cfg(target_os = "linux")]
+pub fn cancel_notification(_key: &str, id: u32) -> Result<()> {
+    if id > 0 {
+        crate::dbus::close_notification(id)?;
+    }
+    Ok(())
+}
+#[cfg(windows)]
+pub fn cancel_notification(key: &str, _id: u32) -> Result<()> {
+    use windows::{UI::Notifications::ToastNotificationManager, core::HSTRING};
+    let tag = if key == "summary" {
+        key.to_string()
+    } else {
+        key.chars().take(16).collect()
+    };
+    ToastNotificationManager::History()?.RemoveGroupedTagWithId(
+        &HSTRING::from(tag),
+        &HSTRING::from("Poknite"),
+        &HSTRING::from(crate::windows_identity::APP_ID),
+    )?;
+    Ok(())
+}
+#[cfg(not(any(target_os = "linux", windows)))]
+pub fn cancel_notification(_key: &str, _id: u32) -> Result<()> {
+    Ok(())
+}

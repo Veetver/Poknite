@@ -6,11 +6,12 @@ android {
         applicationId = "org.poknite"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
         testInstrumentationRunner = "org.poknite.TestRunner"
     }
     buildFeatures { buildConfig = true }
+    sourceSets.getByName("androidTest").assets.srcDir("../../tools/fixtures")
     buildTypes {
         getByName("release") {
             isMinifyEnabled = true

@@ -5,7 +5,7 @@ use poknite_server::{
     config::Config,
     db,
     http::{self, App},
-    tls,
+    management, tls,
 };
 use std::{path::PathBuf, sync::atomic::Ordering, time::Duration};
 
@@ -16,7 +16,7 @@ fn main() -> Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args.iter().any(|a| a == "--help") {
         println!(
-            "Poknite {}\npoknited --config FILE <serve|init|user NAME|channel NAME|grant USER CHANNEL|ungrant USER CHANNEL|invite USER|revoke DEVICE|status|cleanup>\nserve --dev-http: только loopback, для разработки",
+            "Poknite {}\npoknited --config FILE <serve|init|user NAME|channel NAME|grant USER CHANNEL|ungrant USER CHANNEL|invite USER|administrator USER|revoke DEVICE|status|cleanup>\nserve --dev-http: только loopback, для разработки",
             env!("CARGO_PKG_VERSION")
         );
         return Ok(());
@@ -80,15 +80,16 @@ fn main() -> Result<()> {
         });
         let service =
             http::router(app.clone()).into_make_service_with_connect_info::<std::net::SocketAddr>();
-        if dev {
-            axum_server::bind(config.listen)
-                .handle(handle)
-                .serve(service)
-                .await?;
+        let tls = if !dev || config.management.enabled {
+            Some(
+                tls::load(&config)
+                    .await
+                    .context("Не удалось загрузить сертификат HTTPS")?,
+            )
         } else {
-            let tls = tls::load(&config)
-                .await
-                .context("Не удалось загрузить сертификат HTTPS")?;
+            None
+        };
+        if let Some(tls) = &tls {
             let reload = tls.clone();
             let reload_app = app.clone();
             tokio::spawn(async move {
@@ -111,11 +112,42 @@ fn main() -> Result<()> {
                     }
                 }
             });
-            axum_server::bind_rustls(config.listen, tls)
-                .handle(handle)
-                .serve(service)
-                .await?;
         }
+        let management_handle = axum_server::Handle::new();
+        let management_shutdown = management_handle.clone();
+        let management_app = app.clone();
+        let management_tls = tls.clone();
+        let management_config = config.management.clone();
+        let administration = async move {
+            if management_config.enabled {
+                axum_server::bind_rustls(management_config.listen, management_tls.unwrap())
+                    .handle(management_handle)
+                    .serve(
+                        management::router(management_app)
+                            .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                    )
+                    .await
+            } else {
+                std::future::pending::<std::io::Result<()>>().await
+            }
+        };
+        let public = async {
+            if dev {
+                axum_server::bind(config.listen)
+                    .handle(handle.clone())
+                    .serve(service)
+                    .await
+            } else {
+                axum_server::bind_rustls(config.listen, tls.unwrap())
+                    .handle(handle.clone())
+                    .serve(service)
+                    .await
+            }
+        };
+        let result = tokio::select! {result=public=>result,result=administration=>result};
+        management_shutdown.graceful_shutdown(Some(Duration::from_secs(5)));
+        handle.graceful_shutdown(Some(Duration::from_secs(5)));
+        result?;
         let _ = std::fs::remove_file(config.admin_socket());
         drop(lock);
         Ok::<_, anyhow::Error>(())

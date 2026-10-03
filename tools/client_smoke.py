@@ -9,6 +9,7 @@ import sqlite3
 import subprocess
 import tempfile
 import time
+import uuid
 
 def execute(args, **kwargs):
     result = subprocess.run([str(a) for a in args], capture_output=True, text=True, **kwargs)
@@ -67,6 +68,9 @@ def main():
         execute([*admin, 'init'])
         execute([*admin, 'user', 'Receiver'])
         execute([*admin, 'user', 'Sender'])
+        if args.gui_report:
+            execute([*admin, 'channel', 'Рабочий · work'])
+            execute([*admin, 'grant', '1', '2'])
         log = (root / 'server.log').open('w')
         handles.append(log)
         server = subprocess.Popen([str(a) for a in [*admin, 'serve']], stdout=log, stderr=log)
@@ -92,6 +96,11 @@ def main():
                 command(i, 'enroll', '--server', f'https://127.0.0.1:{port}',
                         '--invitation-file', invite, '--name', f'Device-{i}')
                 assert (profiles[i] / 'profile.json').stat().st_mode & 0o077 == 0
+            # The code is moved locally between disposable trusted profiles, never HTTP.
+            group_code = root / 'group.code'
+            command(0, 'key-create', '--channel', '1', '--key-file', group_code)
+            for i in [1, 2]:
+                command(i, 'key-import', '--channel', '1', '--key-file', group_code)
             def run(index):
                 path = root / f'client-{index}-{len(children)}.log'
                 handle = path.open('w')
@@ -128,14 +137,24 @@ def main():
                                   '--headless', 'devices'], capture_output=True)
             assert bad.returncode != 0
             if args.gui_report:
+                # The test revoked a device: rotate before the GUI sends again.
+                rotated_code = root / 'group-rotated.code'
+                command(0, 'key-create', '--channel', '1', '--key-file', rotated_code)
+                command(2, 'key-import', '--channel', '1', '--key-file', rotated_code)
+                command(0, 'key-create', '--channel', '2', '--key-file', root / 'work.code')
                 first.terminate()
                 first.wait(timeout=5)
+                with sqlite3.connect(profiles[0] / 'history.db') as database:
+                    database.execute("INSERT INTO meta VALUES('selected_channel',1) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+                    for channel, value in [(1, 'Черновик для общего канала'), (2, 'Привет! Продолжаем обсуждение здесь.')]:
+                        database.execute('INSERT OR REPLACE INTO drafts(channel_id,text,message_id) VALUES(?,?,?)', (channel, value, str(uuid.uuid4())))
                 args.gui_report.parent.mkdir(parents=True, exist_ok=True)
                 execute(['python3', Path(__file__).resolve().parents[1] / 'crates/desktop/tests/gui_smoke.py',
-                         '--binary', client_binary, '--profile-dir', profiles[0], '--ca', ca,
+                         '--binary', client_binary, '--profile-dir', profiles[0], '--publisher-profile-dir', profiles[2], '--ca', ca,
+                         '--switch-channel', '2', '--screenshot', args.gui_report.with_suffix('.png').resolve(),
                          '--report', args.gui_report.resolve()])
             report = {'result': 'pass', 'checks': ['validated_https_wss', 'private_profile',
-                      'independent_devices', 'offline_replay', 'server_expiration',
+                      'e2ee_device_keys', 'independent_devices', 'offline_replay', 'server_expiration',
                       'local_copy_retained', 'live_revocation', 'untrusted_tls_rejected'],
                       'devices': 3, 'messages': 2}
             if args.output:

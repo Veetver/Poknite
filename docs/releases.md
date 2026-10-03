@@ -1,6 +1,6 @@
 # Автоматические релизы
 
-Выпуск запускается при отправке тега `vMAJOR.MINOR.PATCH`, например `v0.1.0`.
+Выпуск запускается при отправке тега `vMAJOR.MINOR.PATCH`, например `v0.2.0`.
 Теги вида `v0.2.0-rc.1`, `v0.2.0-alpha.1` и `v0.2.0-beta.1` создают pre-release.
 Коммит тега должен входить в историю основной ветки репозитория.
 
@@ -55,9 +55,9 @@ Workflow `Release Poknite` повторяет проверки Linux, Windows и
 4. Проверьте версию и отправьте тег на нужный коммит:
 
    ```sh
-   python3 tools/release_metadata.py v0.1.0
-   git tag -a v0.1.0 -m 'Poknite 0.1.0'
-   git push origin v0.1.0
+   python3 tools/release_metadata.py v0.2.0
+   git tag -a v0.2.0 -m 'Poknite 0.2.0'
+   git push origin v0.2.0
    ```
 
 После успешного `Release Poknite` файлы появятся на странице Releases:
@@ -79,13 +79,13 @@ Windows `.exe` не подписан Authenticode: подпись GitHub под�
 ## Проверка скачанного релиза
 
 Установите актуальную GitHub CLI с командой `gh attestation`.
-Для Linux-архива версии 0.1.0:
+Для Linux-архива версии 0.2.0:
 
 ```sh
-gh attestation verify poknite-0.1.0-linux-x64.tar.gz \
+gh attestation verify poknite-0.2.0-linux-x64.tar.gz \
   --repo Veetver/Poknite \
   --bundle attestation.sigstore.json \
-  --cert-identity 'https://github.com/Veetver/Poknite/.github/workflows/release.yml@refs/tags/v0.1.0'
+  --cert-identity 'https://github.com/Veetver/Poknite/.github/workflows/release.yml@refs/tags/v0.2.0'
 ```
 
 Аналогично проверяются Windows-архив и APK. Если скачаны все файлы поставки,
@@ -96,7 +96,7 @@ gh attestation verify poknite-0.1.0-linux-x64.tar.gz \
 Проверка APK средствами Android SDK:
 
 ```sh
-"$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs poknite-0.1.0-android.apk
+"$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs poknite-0.2.0-android.apk
 ```
 
 Сравните SHA-256 сертификата с доверенным значением `ANDROID_CERT_SHA256`.

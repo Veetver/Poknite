@@ -1,4 +1,4 @@
-use crate::{config::Config, db};
+use crate::{access, config::Config, db};
 use anyhow::{Result, bail, ensure};
 use rusqlite::params;
 
@@ -35,11 +35,27 @@ pub fn command(config: &Config, args: &[String]) -> Result<()> {
             tx.commit()?;
             println!("Пользователь: {id}");
         }
+        "administrator" => {
+            let user = value(1)?.parse::<i64>()?;
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            ensure!(
+                access::enabled(&tx, user)?,
+                "Пользователь не найден или отключён"
+            );
+            tx.execute("INSERT OR IGNORE INTO user_roles VALUES(?,1)", [user])?;
+            access::ensure_last_admin(&tx)?;
+            tx.commit()?;
+            println!("Администратор назначен: {user}");
+        }
         "channel" => {
             let name = value(1)?;
             ensure!(poknite_protocol::valid_name(&name), "Имя: 1…64 символа");
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-            let count: i64 = tx.query_row("SELECT COUNT(*) FROM channels", [], |r| r.get(0))?;
+            let count: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM channels WHERE kind='channel' AND closed=0",
+                [],
+                |r| r.get(0),
+            )?;
             ensure!(count < 64, "Лимит 64 каналов достигнут");
             tx.execute("INSERT INTO channels(name) VALUES(?)", [name.trim()])?;
             let id = tx.last_insert_rowid();
@@ -66,6 +82,10 @@ pub fn command(config: &Config, args: &[String]) -> Result<()> {
         }
         "invite" => {
             let user = value(1)?.parse::<i64>()?;
+            ensure!(
+                access::enabled(&conn, user)?,
+                "Пользователь отключён или не найден"
+            );
             let code = db::secret()?;
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             tx.execute("DELETE FROM invitations WHERE expires_at<=?", [db::now()])?;
@@ -109,7 +129,7 @@ pub fn command(config: &Config, args: &[String]) -> Result<()> {
             println!("Удалено: {}", db::cleanup(&mut conn)?);
         }
         _ => bail!(
-            "Команды: serve, init, user ИМЯ, channel ИМЯ, grant USER CHANNEL, ungrant USER CHANNEL, invite USER, revoke DEVICE, status, cleanup"
+            "Команды: serve, init, user ИМЯ, channel ИМЯ, grant USER CHANNEL, ungrant USER CHANNEL, invite USER, administrator USER, revoke DEVICE, status, cleanup"
         ),
     }
     // Admin commands are serialized by SQLite; the private socket wakes live streams immediately.

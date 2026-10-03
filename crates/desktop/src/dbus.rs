@@ -194,6 +194,40 @@ pub fn notify(title: &str, body: &str, replaces: u32, quiet: bool) -> Result<u32
     }
 }
 
+pub fn close_notification(id: u32) -> Result<()> {
+    initialize();
+    unsafe {
+        let connection = Connection(dbus_bus_get(0, ptr::null_mut()));
+        if connection.0.is_null() {
+            bail!("Шина D-Bus недоступна");
+        }
+        let message = Message(dbus_message_new_method_call(
+            c"org.freedesktop.Notifications".as_ptr(),
+            c"/org/freedesktop/Notifications".as_ptr(),
+            c"org.freedesktop.Notifications".as_ptr(),
+            c"CloseNotification".as_ptr(),
+        ));
+        if message.0.is_null() {
+            bail!("Не хватает памяти для отмены уведомления");
+        }
+        let mut iter = Iter::new();
+        dbus_message_iter_init_append(message.0, &mut iter);
+        if dbus_message_iter_append_basic(&mut iter, b'u' as c_int, (&id as *const u32).cast()) == 0
+        {
+            bail!("Не удалось отменить уведомление");
+        }
+        let reply = Message(dbus_connection_send_with_reply_and_block(
+            connection.0,
+            message.0,
+            3000,
+            ptr::null_mut(),
+        ));
+        if reply.0.is_null() {
+            bail!("Служба уведомлений недоступна");
+        }
+        Ok(())
+    }
+}
 #[cfg(test)]
 mod tests {
     #[test]

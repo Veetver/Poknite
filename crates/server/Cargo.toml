@@ -26,6 +26,7 @@ fs2 = "0.4"
 rustls-pemfile = "2"
 x509-parser = { version = "0.18", default-features = false }
 [dev-dependencies]
+poknite-client = { path = "../client" }
 tempfile = "3"
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 tokio-tungstenite = "0.29"

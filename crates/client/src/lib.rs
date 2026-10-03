@@ -3,4 +3,5 @@ pub mod transport;
 pub use store::{Profile, Store};
 pub use transport::{Api, ConnectionStatus, Update};
 
+pub mod e2ee;
 pub mod network;
